@@ -1,0 +1,300 @@
+import pygame
+from pygame.locals import *
+from OpenGL.GL import *
+from OpenGL.GLU import *
+import numpy as np
+import math
+from lib.gnc import Rzyx
+
+class OpenGLUtils:
+    """Helper class for OpenGL initialization and basic drawing."""
+    @staticmethod
+    def init_gl(width, height):
+        glClearColor(0.0, 0.05, 0.1, 1.0) # Deep ocean blue background
+        glEnable(GL_DEPTH_TEST)
+        glEnable(GL_LIGHTING)
+        glEnable(GL_LIGHT0)
+        
+        # Light configuration
+        glLightfv(GL_LIGHT0, GL_AMBIENT, (0.2, 0.2, 0.2, 1.0))
+        glLightfv(GL_LIGHT0, GL_DIFFUSE, (0.8, 0.8, 0.8, 1.0))
+        glLightfv(GL_LIGHT0, GL_SPECULAR, (1.0, 1.0, 1.0, 1.0))
+        
+        glEnable(GL_COLOR_MATERIAL)
+        glColorMaterial(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE)
+        
+        OpenGLUtils.resize(width, height)
+
+    @staticmethod
+    def resize(width, height):
+        if height == 0: height = 1
+        glViewport(0, 0, width, height)
+        glMatrixMode(GL_PROJECTION)
+        glLoadIdentity()
+        gluPerspective(45, (width / height), 0.1, 200.0)
+        glMatrixMode(GL_MODELVIEW)
+
+    @staticmethod
+    def draw_axes(length=1.0):
+        glBegin(GL_LINES)
+        # X - Red
+        glColor3f(1, 0, 0)
+        glVertex3f(0, 0, 0)
+        glVertex3f(length, 0, 0)
+        # Y - Green
+        glColor3f(0, 1, 0)
+        glVertex3f(0, 0, 0)
+        glVertex3f(0, length, 0)
+        # Z - Blue
+        glColor3f(0, 0, 1)
+        glVertex3f(0, 0, 0)
+        glVertex3f(0, 0, length)
+        glEnd()
+
+    @staticmethod
+    def draw_grid(size=20, step=2):
+        glDisable(GL_LIGHTING)
+        glColor3f(0.0, 0.2, 0.4)
+        glBegin(GL_LINES)
+        for i in range(-size, size+1, step):
+            glVertex3f(i, -size, 0)
+            glVertex3f(i, size, 0)
+            glVertex3f(-size, i, 0)
+            glVertex3f(size, i, 0)
+        glEnd()
+        glEnable(GL_LIGHTING)
+
+class SubmarineVisual:
+    """Class responsible for drawing the 3D submarine model."""
+    def __init__(self):
+        self.quadric = gluNewQuadric()
+
+    def draw(self, actor):
+        # Extract specific state from SubmarineActor if available, else default
+        rudder_angle = 0
+        stern_angle = 0
+        if hasattr(actor, 'rudder_angle'):
+            rudder_angle = actor.rudder_angle
+        if hasattr(actor, 'stern_angle'):
+            stern_angle = actor.stern_angle
+
+        # --- Hull (Cylinder) ---
+        glColor3f(0.7, 0.7, 0.75) # Light grey hull
+        glPushMatrix()
+        glTranslate(-0.8, 0, 0) # Center the 1.6m length
+        # Cylinder draws along Z by default. Rotate to align with X.
+        glRotate(90, 0, 1, 0) 
+        gluCylinder(self.quadric, 0.19/2, 0.19/2, 1.6, 32, 16)
+        
+        # --- Nose (Cone) ---
+        glTranslate(0, 0, 1.6) # Move to front of cylinder
+        glColor3f(0.8, 0.3, 0.3) # Red nose
+        gluCylinder(self.quadric, 0.19/2, 0.0, 0.3, 32, 4)
+        glPopMatrix()
+        
+        # --- Tail Cap (Disk) ---
+        glPushMatrix()
+        glTranslate(-0.8, 0, 0)
+        glRotate(-90, 0, 1, 0) # Rotate to face back
+        glColor3f(0.6, 0.6, 0.6)
+        gluDisk(self.quadric, 0, 0.19/2, 32, 1)
+        glPopMatrix()
+        
+        # --- Fins ---
+        # Top Fin (Up in GL is +Y). Deflects for Rudder.
+        self._draw_fin(0, -rudder_angle) 
+        # Bottom Fin (-Y). 
+        self._draw_fin(180, -rudder_angle)
+        # Starboard Fin (+Z). Angle = 90.
+        self._draw_fin(90, stern_angle)
+        # Port Fin (-Z). Angle = -90.
+        self._draw_fin(-90, stern_angle)
+
+    def _draw_fin(self, angle_deg, deflect_angle):
+        fin_pos_x = -0.8
+        fin_w = 0.2
+        fin_h = 0.3
+        
+        glPushMatrix()
+        glTranslate(fin_pos_x, 0, 0)
+        glRotate(angle_deg, 1, 0, 0) # Rotate around X
+        glTranslate(0, 0.19/2, 0) # Move to surface
+        
+        # Deflection
+        glRotate(math.degrees(deflect_angle), 0, 1, 0) # Rotate around span (Y)
+        
+        glColor3f(1.0, 0.8, 0.0) # Yellow fins
+        glBegin(GL_TRIANGLES)
+        glVertex3f(0, 0, 0) # Base Front
+        glVertex3f(-fin_w, 0, 0) # Base Back
+        glVertex3f(-fin_w/2, fin_h, 0) # Tip
+        glEnd()
+        
+        glPopMatrix()
+
+class UI:
+    """Class responsible for rendering the User Interface (HUD)."""
+    def __init__(self, font_name="Arial", font_size=18):
+        pygame.font.init()
+        self.font = pygame.font.SysFont(font_name, font_size)
+
+    def draw_text_gl(self, x, y, text):
+        surface = self.font.render(text, True, (255, 255, 255))
+        text_data = pygame.image.tostring(surface, "RGBA", False)
+        w, h = surface.get_size()
+        
+        tex_id = glGenTextures(1)
+        glBindTexture(GL_TEXTURE_2D, tex_id)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, text_data)
+        
+        glEnable(GL_TEXTURE_2D)
+        glEnable(GL_BLEND)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
+        glDisable(GL_LIGHTING)
+        
+        glColor3f(1, 1, 1)
+        glBegin(GL_QUADS)
+        glTexCoord2f(0, 0); glVertex2f(x, y)
+        glTexCoord2f(1, 0); glVertex2f(x + w, y)
+        glTexCoord2f(1, 1); glVertex2f(x + w, y + h)
+        glTexCoord2f(0, 1); glVertex2f(x, y + h)
+        glEnd()
+        
+        glDisable(GL_BLEND)
+        glDisable(GL_TEXTURE_2D)
+        glEnable(GL_LIGHTING)
+        glDeleteTextures([tex_id])
+
+    def draw_hud(self, width, height, actor):
+        # Only draw HUD for SubmarineActor for now
+        if not hasattr(actor, 'get_physics_state'):
+            return
+            
+        physics_state = actor.get_physics_state()
+        
+        glMatrixMode(GL_PROJECTION)
+        glPushMatrix()
+        glLoadIdentity()
+        glOrtho(0, width, height, 0, -1, 1)
+        glMatrixMode(GL_MODELVIEW)
+        glLoadIdentity()
+        
+        u_actual = physics_state['u_actual']
+        eta = physics_state['eta']
+        nu = physics_state['nu']
+        target_rpm = physics_state['target_rpm']
+        
+        top_deg = math.degrees(u_actual[0])
+        bot_deg = math.degrees(u_actual[1])
+        stb_deg = math.degrees(u_actual[2])
+        prt_deg = math.degrees(u_actual[3])
+        
+        infos = [
+            f"RPM: {target_rpm:.1f} / {u_actual[4]:.1f}",
+            f"Depth: {eta[2]:.2f} m",
+            f"Heading: {math.degrees(eta[5]):.1f} deg",
+            f"Pitch: {math.degrees(eta[4]):.1f} deg",
+            f"Speed: {np.linalg.norm(nu[0:3]):.2f} m/s",
+            f"Rudders: {top_deg:.1f} / {bot_deg:.1f}",
+            f"Sterns: {stb_deg:.1f} / {prt_deg:.1f}",
+            "WASD: Steer | Arrows: RPM | Mouse R-Click: Cam"
+        ]
+        
+        for i, text in enumerate(infos):
+            self.draw_text_gl(10, 10 + i * 20, text)
+            
+        glMatrixMode(GL_PROJECTION)
+        glPopMatrix()
+        glMatrixMode(GL_MODELVIEW)
+
+class Renderer:
+    def __init__(self, width, height):
+        self.width = width
+        self.height = height
+        OpenGLUtils.init_gl(width, height)
+        self.sub_visual = SubmarineVisual()
+        self.ui = UI()
+        
+        # Camera State
+        self.cam_dist = 6.0
+        self.cam_yaw_rel = math.pi 
+        self.cam_pitch_rel = -0.3
+        
+        # Initial Mouse delta
+        pygame.mouse.get_rel()
+
+    def resize(self, width, height):
+        self.width = width
+        self.height = height
+        OpenGLUtils.resize(width, height)
+
+    def update_camera_input(self):
+        if pygame.mouse.get_pressed()[2]: # Right click
+            mx, my = pygame.mouse.get_rel()
+            self.cam_yaw_rel += mx * 0.005
+            self.cam_pitch_rel += my * 0.005
+            self.cam_pitch_rel = max(min(self.cam_pitch_rel, 1.5), -1.5)
+        else:
+            pygame.mouse.get_rel()
+
+    def render(self, logic_stage):
+        self.update_camera_input()
+        
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
+        glLoadIdentity()
+        
+        # Camera Logic - Focus on the first actor (Submarine)
+        actors = logic_stage.get_actors()
+        if not actors:
+            return
+
+        main_actor = actors[0]
+        pos = main_actor.position
+        # Roll, Pitch, Yaw
+        orientation = main_actor.orientation 
+        
+        # Camera Position Calculation
+        cx_b = self.cam_dist * math.cos(self.cam_pitch_rel) * math.cos(self.cam_yaw_rel)
+        cy_b = self.cam_dist * math.cos(self.cam_pitch_rel) * math.sin(self.cam_yaw_rel)
+        cz_b = -self.cam_dist * math.sin(self.cam_pitch_rel)
+        cam_offset_body = np.array([cx_b, cy_b, cz_b])
+        
+        # Orientation is [roll, pitch, yaw]
+        R_vehicle = Rzyx(orientation[0], orientation[1], orientation[2])
+        cam_pos_world = pos + R_vehicle @ cam_offset_body
+        
+        gluLookAt(cam_pos_world[0], cam_pos_world[1], cam_pos_world[2],
+                  pos[0], pos[1], pos[2],
+                  0, 0, -1)
+        
+        # Light
+        glLightfv(GL_LIGHT0, GL_POSITION, (pos[0]+10, pos[1]+10, pos[2]-20, 1))
+        
+        # Grid
+        glPushMatrix()
+        grid_step = 20
+        grid_x = round(pos[0] / grid_step) * grid_step
+        grid_y = round(pos[1] / grid_step) * grid_step
+        glTranslate(grid_x, grid_y, 0)
+        OpenGLUtils.draw_grid(size=100, step=5)
+        glPopMatrix()
+        
+        # Draw all actors
+        for actor in actors:
+            glPushMatrix()
+            glTranslate(actor.position[0], actor.position[1], actor.position[2])
+            glRotate(math.degrees(actor.orientation[2]), 0, 0, 1) # Yaw
+            glRotate(math.degrees(actor.orientation[1]), 0, 1, 0) # Pitch
+            glRotate(math.degrees(actor.orientation[0]), 1, 0, 0) # Roll
+            
+            # TODO: Select visual based on actor type/name
+            self.sub_visual.draw(actor)
+            OpenGLUtils.draw_axes(2.0)
+            glPopMatrix()
+            
+        # Draw HUD for main actor
+        self.ui.draw_hud(self.width, self.height, main_actor)
+        
+        pygame.display.flip()
