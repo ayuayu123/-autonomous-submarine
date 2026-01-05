@@ -14,7 +14,7 @@ class SimulatorApp:
     """Main Application class integrating Logic, Physics and View."""
     def __init__(self):
         pygame.init()
-        self.width, self.height = 800, 600
+        self.width, self.height = 1260, 900
         
         # Set up OpenGL context
         pygame.display.set_mode((self.width, self.height), DOUBLEBUF | OPENGL | RESIZABLE)
