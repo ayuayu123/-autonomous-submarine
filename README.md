@@ -9,20 +9,42 @@ SubmarineHunting 是一个基于 Python 的潜艇/鱼雷仿真项目。该项目
 - **数据可视化**:
   - 使用 `matplotlib` 绘制位置、速度、姿态等状态变量随时间变化的曲线。
   - 生成 3D 轨迹图。
-- **3D 实时仿真**: 基于 `pygame` 的交互式 3D 线框模型可视化。
+- **3D 实时仿真**: 基于 `pygame` 和 `OpenGL` 的交互式 3D 可视化。
+
+## 数学模型
+本项目采用了 Fossen (2021) 提出的标准水下航行器 6 自由度运动方程。
+
+### 1. 运动学 (Kinematics)
+描述车辆在惯性坐标系（NED Frame）下的位置和姿态变化：
+$$ \dot{\eta} = J(\eta) \nu $$
+其中：
+- $\eta = [x, y, z, \phi, \theta, \psi]^T$：北东地（NED）坐标系下的位置和欧拉角。
+- $\nu = [u, v, w, p, q, r]^T$：机体坐标系（Body Frame）下的线速度和角速度。
+- $J(\eta)$：速度变换矩阵，包含旋转矩阵 $R_b^n(\Theta)$ 和角速度变换矩阵 $T_{\Theta}(\Theta)$。
+
+### 2. 动力学 (Dynamics)
+描述车辆在机体坐标系下的受力与运动关系（牛顿-欧拉方程）：
+$$ M \dot{\nu} + C(\nu)\nu + D(\nu)\nu + g(\eta) = \tau $$
+其中：
+- $M = M_{RB} + M_A$：系统惯性矩阵（刚体质量 + 附加质量）。
+- $C(\nu) = C_{RB}(\nu) + C_A(\nu)$：科里奥利和向心力矩阵。
+- $D(\nu)$：阻尼矩阵（包含线性阻尼和非线性二次阻尼）。
+- $g(\eta)$：恢复力向量（重力 $W$ 与浮力 $B$ 产生的力和力矩）。
+- $\tau$：控制输入向量（由推进器和舵面产生的力和力矩）。
 
 ## 环境要求
 本项目依赖以下 Python 库：
 - `numpy`: 用于数值计算
 - `matplotlib`: 用于绘图
-- `pygame`: 用于 3D 实时可视化
+- `pygame`: 用于 3D 实时可视化窗口管理
+- `PyOpenGL`: 用于 3D 图形渲染
 
 ## 安装说明
 1. 克隆或下载本项目到本地。
 2. 确保已安装 Python 3.x。
 3. 安装依赖库：
    ```bash
-   pip install numpy matplotlib pygame
+   pip install numpy matplotlib pygame PyOpenGL
    ```
 
 ## 使用说明
@@ -48,13 +70,15 @@ python pygame_sim.py
 
 ## 项目结构
 - `main.py`: 数值仿真主程序，负责计算和绘图。
-- `pygame_sim.py`: 基于 Pygame 的交互式 3D 可视化程序。
-- `torpedo.py`: 定义 `torpedo` 类，包含潜艇物理参数、动力学方程和控制逻辑。
+- `pygame_sim.py`: 基于 Pygame 和 OpenGL 的交互式 3D 可视化程序。
+- `torpedo.py`: 定义 `torpedo` 类，实现鱼雷形潜航器（灵感来自 REMUS 100）的物理参数、动力学方程和控制逻辑。
 - `lib/`: 核心库文件夹
   - `gnc.py`: 制导、导航与控制相关函数（如欧拉角姿态更新）。
   - `models.py`: 动力学模型实现。
   - `plotTimeSeries.py`: 绘图工具函数。
-  - `actuator.py`, `control.py`, `guidance.py`: 辅助模块。
+  - `mainLoop.py`: 仿真循环辅助函数（包含多种车辆模型的预设信息）。
+  - `actuator.py`: 执行机构（舵、推进器）模型。
+  - `control.py`, `guidance.py`: 控制与制导辅助模块。
 
 ## 许可证
 [MIT License](LICENSE) (如有)
