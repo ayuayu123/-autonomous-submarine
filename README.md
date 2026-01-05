@@ -10,6 +10,9 @@ SubmarineHunting 是一个基于 Python 的潜艇/鱼雷仿真项目。该项目
   - 使用 `matplotlib` 绘制位置、速度、姿态等状态变量随时间变化的曲线。
   - 生成 3D 轨迹图。
 - **3D 实时仿真**: 基于 `pygame` 和 `OpenGL` 的交互式 3D 可视化。
+- **仿真环境**:
+  - 坐标单位：1 单位 = 1 米。
+  - 初始状态：潜艇初始位置为 (0, 0, 400)。
 
 ## 数学模型
 本项目采用了 Fossen (2021) 提出的标准水下航行器 6 自由度运动方程。
@@ -66,19 +69,22 @@ python pygame_sim.py
 - **W / S**: 控制俯仰（下潜 / 上浮）
 - **A / D**: 控制偏航（左转 / 右转）
 - **↑ / ↓ (方向键)**: 增加 / 减少推进器转速 (RPM)
+- **1 / 2 / 3 / 4**: 微调四个舵面的偏移量 (按住 Shift 键反向调节)
 - **鼠标右键拖拽**: 旋转摄像机视角
 
 ## 项目结构
 - `main.py`: 数值仿真主程序，负责计算和绘图。
-- `pygame_sim.py`: 基于 Pygame 和 OpenGL 的交互式 3D 可视化程序。
-- `torpedo.py`: 定义 `torpedo` 类，实现鱼雷形潜航器（灵感来自 REMUS 100）的物理参数、动力学方程和控制逻辑。
-- `lib/`: 核心库文件夹
-  - `gnc.py`: 制导、导航与控制相关函数（如欧拉角姿态更新）。
-  - `models.py`: 动力学模型实现。
-  - `plotTimeSeries.py`: 绘图工具函数。
-  - `mainLoop.py`: 仿真循环辅助函数（包含多种车辆模型的预设信息）。
-  - `actuator.py`: 执行机构（舵、推进器）模型。
-  - `control.py`, `guidance.py`: 控制与制导辅助模块。
+- `pygame_sim.py`: 基于 Pygame 和 OpenGL 的交互式 3D 可视化程序入口。
+- `src/`: 源代码目录 (重构新增)
+  - `core/`: 核心架构 (Stage, Actor)
+  - `physics/`: 物理实体 (`SubmarineActor`)
+  - `view/`: 渲染引擎 (`Renderer`)
+- `torpedo.py`: 潜航器物理模型定义 (REMUS 100)。
+- `lib/`: 核心算法库
+  - `gnc.py`: GNC (制导、导航与控制) 算法。
+  - `models.py`: 动力学方程。
+  - `actuator.py`: 执行机构模型。
+  - `plotTimeSeries.py`: 绘图工具。
 
 ## 许可证
 [MIT License](LICENSE) (如有)

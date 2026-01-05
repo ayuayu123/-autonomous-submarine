@@ -24,7 +24,10 @@ class SubmarineActor(Actor):
         
         # State (eta: [x, y, z, phi, theta, psi])
         self.eta = np.zeros(6) 
-        self.eta[2] = 5.0 # Initial depth
+        # Initial position (0, 0, 400) - 1 unit = 1 meter
+        self.eta[0] = 0.0
+        self.eta[1] = 0.0
+        self.eta[2] = 100.0
         
         self.nu = np.zeros(6)
         self.u_actual = np.zeros(self.vehicle.dimU)

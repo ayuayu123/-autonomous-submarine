@@ -192,6 +192,7 @@ class UI:
         prt_deg = math.degrees(u_actual[3])
         
         infos = [
+            f"Pos(XYZ): {eta[0]:.1f}, {eta[1]:.1f}, {eta[2]:.1f}",
             f"RPM: {target_rpm:.1f} / {u_actual[4]:.1f}",
             f"Depth: {eta[2]:.2f} m",
             f"Heading: {math.degrees(eta[5]):.1f} deg",
