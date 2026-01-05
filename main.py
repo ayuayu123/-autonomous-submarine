@@ -12,8 +12,8 @@ plt.rcParams['axes.unicode_minus'] = False
 # 模式: "stepInput" 或 "depthHeadingAutopilot"
 vehicle = torpedo(controlSystem="stepInput", r_rpm=1500)
 
-print(f"Project: {vehicle.name}")
-print(f"Control Mode: {vehicle.controlMode}")
+print(f"项目: {vehicle.name}")
+print(f"控制模式: {vehicle.controlMode}")
 
 # 2. 初始状态
 eta = np.zeros(6)  # 位置和姿态 [x, y, z, phi, theta, psi]
@@ -27,12 +27,12 @@ t_final = 10
 N = int(t_final / sampleTime)
 
 # 存储历史数据以便绘图
-# simData structure: [eta (6), nu (6), u_control (dimU), u_actual (dimU)]
+# simData 结构: [eta (6), nu (6), u_control (dimU), u_actual (dimU)]
 simData = np.zeros((N, 12 + 2 * vehicle.dimU))  
 t_history = np.zeros(N)
 
 # 4. 主循环
-print("Starting simulation...")
+print("开始仿真...")
 for i in range(N):
     t = i * sampleTime
 
@@ -55,7 +55,7 @@ for i in range(N):
     simData[i, 12 + vehicle.dimU:] = u_actual
     t_history[i] = t
 
-print("Simulation finished.")
+print("仿真结束。")
 
 # 5. 绘图
 plotVehicleStates(t_history, simData, 1)
