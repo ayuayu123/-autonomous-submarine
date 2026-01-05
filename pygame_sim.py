@@ -211,6 +211,9 @@ def main():
     rudder_angle = 0.0 # Yaw
     stern_angle = 0.0 # Pitch
     
+    # Fine adjustments for each fin [Top, Bottom, Starboard, Port]
+    fin_offsets = np.zeros(4)
+    
     # Camera orbital state (Relative to vehicle)
     cam_dist = 6.0
     cam_yaw_rel = math.pi # 180 deg (Behind)
@@ -274,6 +277,15 @@ def main():
         if keys[pygame.K_d]: # Turn Right
             rudder_angle -= angle_step
             
+        # Fine control for individual fins (1, 2, 3, 4) + Shift for decrease
+        fine_step = 0.1 * math.pi / 180
+        direction = -1 if (keys[pygame.K_LSHIFT] or keys[pygame.K_RSHIFT]) else 1
+        
+        if keys[pygame.K_1]: fin_offsets[0] += direction * fine_step # Top
+        if keys[pygame.K_2]: fin_offsets[1] += direction * fine_step # Bottom
+        if keys[pygame.K_3]: fin_offsets[2] += direction * fine_step # Starboard
+        if keys[pygame.K_4]: fin_offsets[3] += direction * fine_step # Port
+            
         # Clamp angles
         stern_angle = max(min(stern_angle, max_angle), -max_angle)
         rudder_angle = max(min(rudder_angle, max_angle), -max_angle)
@@ -312,10 +324,10 @@ def main():
         # We want Turn Right. Right needs Top +, Bottom -.
         # Top = -rudder_angle (+), Bottom = rudder_angle (-). Correct.
 
-        u_control[0] = -rudder_angle # Top
-        u_control[1] = rudder_angle  # Bottom
-        u_control[2] = -stern_angle  # Starboard
-        u_control[3] = stern_angle   # Port
+        u_control[0] = -rudder_angle + fin_offsets[0] # Top
+        u_control[1] = rudder_angle + fin_offsets[1]  # Bottom
+        u_control[2] = -stern_angle + fin_offsets[2]  # Starboard
+        u_control[3] = stern_angle + fin_offsets[3]   # Port
         u_control[4] = target_rpm
         
         # Physics Step
@@ -425,7 +437,8 @@ def main():
             f"Speed: {np.linalg.norm(nu[0:3]):.2f} m/s",
             f"Rudders (Top/Bot): {top_deg:.1f} / {bot_deg:.1f} deg",
             f"Sterns (Stb/Prt): {stb_deg:.1f} / {prt_deg:.1f} deg",
-            "Controls: WASD + Arrow Up/Down"
+            "Controls: WASD + Arrow Up/Down",
+            "Fine Tune: 1,2,3,4 (+Shift)"
         ]
         
         for i, text in enumerate(infos):
