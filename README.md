@@ -72,6 +72,53 @@ python pygame_sim.py
 - **1 / 2 / 3 / 4**: 微调四个舵面的偏移量 (按住 Shift 键反向调节)
 - **鼠标右键拖拽**: 旋转摄像机视角
 
+## 开发指南：如何构造并添加自定义 Actor
+
+本项目使用 Actor-Stage 模式来管理仿真对象。如果需要添加新的实体（如障碍物、其他潜艇、目标等），请遵循以下步骤：
+
+### 1. 继承 Actor 基类
+在 `src/` 目录下（或合适的子目录）创建一个新文件，定义一个继承自 `src.core.actor.Actor` 的类。
+
+```python
+from src.core.actor import Actor
+import numpy as np
+
+class MyCustomActor(Actor):
+    def __init__(self, name="MyActor", x=0, y=0, z=0):
+        # 1. 初始化基类
+        super().__init__(name=name, x=x, y=y, z=z)
+        
+        # 2. 自定义属性
+        self.speed = 1.0 
+
+    def update(self, dt):
+        """
+        每帧调用一次的逻辑更新
+        dt: 距离上一帧的时间间隔 (秒)
+        """
+        # 示例：简单的直线运动
+        self.position[0] += self.speed * dt  # 向北移动
+        
+        # 如果需要，也可以更新姿态 self.orientation (roll, pitch, yaw)
+```
+
+### 2. 将 Actor 添加到 Stage
+在仿真主程序（如 `pygame_sim.py` 或自定义脚本）中，实例化你的 Actor 并将其添加到 `LogicStage`。
+
+```python
+from src.core.stage import LogicStage
+# from path.to.your.file import MyCustomActor # 导入你的类
+
+# 1. 创建舞台 (通常在 App 初始化时完成)
+# stage = LogicStage()
+
+# 2. 创建并添加 Actor
+# my_actor = MyCustomActor(name="TestObject", x=10, y=20, z=50)
+# stage.add_actor(my_actor)
+
+# 3. 在主循环中，stage.update(dt) 会自动调用 my_actor.update(dt)
+```
+
 ## 项目结构
 - `main.py`: 数值仿真主程序，负责计算和绘图。
 - `pygame_sim.py`: 基于 Pygame 和 OpenGL 的交互式 3D 可视化程序入口。

@@ -132,6 +132,20 @@ class SubmarineVisual:
         
         glPopMatrix()
 
+class TargetPointVisual:
+    """Class responsible for drawing the 3D target point."""
+    def __init__(self):
+        self.quadric = gluNewQuadric()
+        gluQuadricDrawStyle(self.quadric, GLU_LINE) # Wireframe
+
+    def draw(self, actor):
+        radius = 10.0
+        if hasattr(actor, 'radius'):
+            radius = actor.radius
+        
+        glColor3f(0.0, 1.0, 0.0) # Green
+        gluSphere(self.quadric, radius, 16, 16)
+
 class UI:
     """Class responsible for rendering the User Interface (HUD)."""
     def __init__(self, font_name="Arial", font_size=18):
@@ -216,6 +230,7 @@ class Renderer:
         self.height = height
         OpenGLUtils.init_gl(width, height)
         self.sub_visual = SubmarineVisual()
+        self.target_visual = TargetPointVisual()
         self.ui = UI()
         
         # Camera State
@@ -290,8 +305,12 @@ class Renderer:
             glRotate(math.degrees(actor.orientation[1]), 0, 1, 0) # Pitch
             glRotate(math.degrees(actor.orientation[0]), 1, 0, 0) # Roll
             
-            # TODO: Select visual based on actor type/name
-            self.sub_visual.draw(actor)
+            # Select visual based on actor type/name
+            if hasattr(actor, 'radius'):
+                self.target_visual.draw(actor)
+            else:
+                self.sub_visual.draw(actor)
+            
             OpenGLUtils.draw_axes(2.0)
             glPopMatrix()
             

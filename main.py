@@ -17,7 +17,7 @@ print(f"控制模式: {vehicle.controlMode}")
 
 # 2. 初始状态
 eta = np.zeros(6)  # 位置和姿态 [x, y, z, phi, theta, psi]
-eta[2] = 400.0     # Initial Z position (Depth)
+eta[2] = 100.0     # Initial Z position (Depth)
 nu = np.zeros(6)  # 速度 [u, v, w, p, q, r]
 u_actual = np.zeros(vehicle.dimU)
 u_control = np.zeros(vehicle.dimU)

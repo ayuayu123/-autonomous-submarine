@@ -8,6 +8,7 @@ sys.path.append(os.path.dirname(__file__))
 
 from src.core.stage import LogicStage
 from src.physics.submarine_actor import SubmarineActor
+from src.gameplay.target_point_actor import TargetPointActor
 from src.view.renderer import Renderer
 
 class SimulatorApp:
@@ -26,6 +27,10 @@ class SimulatorApp:
         # 2. Physics Layer (Actor)
         self.submarine = SubmarineActor("HeroSub")
         self.logic_stage.add_actor(self.submarine)
+        
+        # Add Target Point
+        self.target = TargetPointActor("Target1", x=40.0, y=0.0, z=100.0, radius=10.0, target_actor=self.submarine)
+        self.logic_stage.add_actor(self.target)
         
         # 3. Animation/View Layer
         self.renderer = Renderer(self.width, self.height)
