@@ -49,7 +49,7 @@ python pygame_sim.py
 ## 项目结构
 - `main.py`: 数值仿真主程序，负责计算和绘图。
 - `pygame_sim.py`: 基于 Pygame 的交互式 3D 可视化程序。
-- `torpedo.py`: 定义 `torpedo` 类，包含车辆物理参数、动力学方程和控制逻辑。
+- `torpedo.py`: 定义 `torpedo` 类，包含潜艇物理参数、动力学方程和控制逻辑。
 - `lib/`: 核心库文件夹
   - `gnc.py`: 制导、导航与控制相关函数（如欧拉角姿态更新）。
   - `models.py`: 动力学模型实现。
