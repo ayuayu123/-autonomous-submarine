@@ -33,32 +33,48 @@ from src.view.renderer import Renderer
 
 
 class EvalApp:
-    """评估可视化应用 (与训练配置匹配)"""
+    """评估可视化应用 (支持命令行配置)"""
     
     def __init__(self, model_path: str, vecnorm_path: str = None,
-                 manual_mode: bool = False, num_obstacles: int = 9):
+                 manual_mode: bool = False, 
+                 # 通道参数
+                 tunnel_radius: float = 6.0,
+                 tunnel_length: float = 50.0,
+                 num_obstacles: int = 18,
+                 obstacle_radius_min: float = 0.6,
+                 obstacle_radius_max: float = 1.0,
+                 obstacle_min_spacing: float = 1.5,
+                 obstacle_start_x: float = 10.0,  # 【新增】障碍物起始X位置
+                 # 点云参数
+                 sample_distance: float = 15.0,
+                 num_points: int = 512):
         pygame.init()
         self.width, self.height = 1280, 900
         
         pygame.display.set_mode((self.width, self.height), DOUBLEBUF | OPENGL | RESIZABLE)
-        pygame.display.set_caption("Submarine RL Evaluation (v9)")
+        pygame.display.set_caption("Submarine RL Evaluation (v10)")
         
         self.manual_mode = manual_mode
         
-        # ============ 与 train.py 一致的配置 ============
+        # ============ 使用传入的参数配置 ============
         self.tunnel_config = TunnelConfig(
-            radius=5.0,
-            length=50.0,
+            radius=tunnel_radius,
+            length=tunnel_length,
             center_z=100.0,
             num_obstacles=num_obstacles,
-            obstacle_radius_min=0.7,
-            obstacle_radius_max=1.0,
+            obstacle_radius_min=obstacle_radius_min,
+            obstacle_radius_max=obstacle_radius_max,
+            obstacle_min_spacing=obstacle_min_spacing,
+            obstacle_start_x=obstacle_start_x,  # 【新增】传递障碍物起始位置
         )
         
+        # 点云采样配置
         self.point_cloud_config = PointCloudConfig(
-            num_points=256,
-            obstacle_points_ratio=0.7,
-            normalize_range=25.0,  # 视野范围 25米
+            num_points=num_points,  # 使用传入的点云数量
+            obstacle_points_ratio=0.5,
+            sample_distance=sample_distance,
+            normalize_range=sample_distance,
+            points_per_obstacle=32,
         )
         
         # 创建 Logic Stage 用于渲染
@@ -75,7 +91,7 @@ class EvalApp:
             tunnel_config=self.tunnel_config,
             point_cloud_config=self.point_cloud_config,
             point_cloud_history_len=8,  # 与 train.py 一致
-            max_steps=6000,
+            max_steps=1200,
         )
         
         # 加载模型
@@ -94,7 +110,7 @@ class EvalApp:
                     tunnel_config=self.tunnel_config,
                     point_cloud_config=self.point_cloud_config,
                     point_cloud_history_len=8,
-                    max_steps=6000,
+                    max_steps=1200,
                 )])
                 self.vec_normalize = VecNormalize.load(vecnorm_path, dummy_env)
                 self.vec_normalize.training = False  # 评估模式
@@ -288,13 +304,18 @@ class EvalApp:
                     
                     self._reset_episode()
             
-            # 提取点云用于渲染
+            # Extract Point Cloud for rendering
             point_cloud = None
             if isinstance(self.obs, dict) and 'point_cloud_seq' in self.obs:
+                # Get latest frame from the sequence
                 pc_seq = self.obs['point_cloud_seq']
-                latest_pc = pc_seq[-1]
+                latest_pc = pc_seq[-1]  # (num_points * 3,)
+                
+                # Reshape to (N, 3)
                 point_cloud = latest_pc.reshape(-1, 3)
-                point_cloud = point_cloud * self.point_cloud_config.normalize_range  # 反归一化
+                
+                # Denormalize (multiply by normalize_range)
+                point_cloud = point_cloud * self.point_cloud_config.normalize_range
 
             # 渲染
             self.renderer.render(self.logic_stage, point_cloud=point_cloud)
@@ -312,22 +333,73 @@ class EvalApp:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate trained submarine model (v9 compatible)")
+    parser = argparse.ArgumentParser(description="Evaluate trained submarine model (v10 - 支持课程阶段配置)")
     parser.add_argument("--model", type=str, default=None,
                         help="Path to trained model (.zip file)")
     parser.add_argument("--vecnorm", type=str, default=None,
                         help="Path to VecNormalize file (vecnormalize.pkl)")
     parser.add_argument("--manual", action="store_true",
                         help="Manual control mode")
-    parser.add_argument("--num-obstacles", type=int, default=9,
-                        help="Number of obstacles (should match training)")
+    
+    # 快捷选项：使用课程阶段配置
+    # 动态获取总阶段数
+    try:
+        from src.rl.curriculum import get_total_stages
+        total_stages = get_total_stages()
+    except ImportError:
+        total_stages = 10  # 默认值
+    
+    parser.add_argument("--stage", type=int, default=None, choices=list(range(1, total_stages + 1)),
+                        help=f"Use curriculum stage config (1-{total_stages}). Overrides other tunnel params.")
+    
+    # 通道参数
+    parser.add_argument("--tunnel-radius", type=float, default=6.0,
+                        help="Tunnel radius in meters (default: 6.0)")
+    parser.add_argument("--tunnel-length", type=float, default=50.0,
+                        help="Tunnel length in meters (default: 50.0)")
+    parser.add_argument("--num-obstacles", type=int, default=18,
+                        help="Number of obstacles (default: 18)")
+    parser.add_argument("--obstacle-radius-min", type=float, default=0.6,
+                        help="Min obstacle radius (default: 0.6)")
+    parser.add_argument("--obstacle-radius-max", type=float, default=1.0,
+                        help="Max obstacle radius (default: 1.0)")
+    parser.add_argument("--obstacle-spacing", type=float, default=1.5,
+                        help="Min obstacle spacing (default: 1.5)")
+    parser.add_argument("--obstacle-start-x", type=float, default=10.0,
+                        help="Obstacle start X position (default: 10.0)")
+    
+    # 点云参数
+    parser.add_argument("--sample-distance", type=float, default=15.0,
+                        help="Point cloud sample distance (default: 15.0)")
+    parser.add_argument("--num-points", type=int, default=512,
+                        help="Number of point cloud points (default: 512)")
     
     args = parser.parse_args()
+    
+    # 如果指定了 --stage，使用课程阶段配置
+    if args.stage is not None:
+        try:
+            from src.rl.curriculum import get_stage_config
+            stage = get_stage_config(args.stage - 1)  # 0-indexed
+            print(f"\n📚 使用课程阶段 {args.stage} 配置: {stage.name}")
+            print(f"   通道: 半径={stage.tunnel_radius}m, 长度={stage.tunnel_length}m")
+            print(f"   障碍物: {stage.num_obstacles}个\n")
+            
+            args.tunnel_radius = stage.tunnel_radius
+            args.tunnel_length = stage.tunnel_length
+            args.num_obstacles = stage.num_obstacles
+            args.obstacle_radius_min = stage.obstacle_radius_min
+            args.obstacle_radius_max = stage.obstacle_radius_max
+            args.obstacle_spacing = stage.obstacle_min_spacing
+            args.obstacle_start_x = stage.obstacle_start_x  # 【新增】读取障碍物起始位置
+            args.sample_distance = stage.sample_distance
+            args.num_points = stage.num_points
+        except ImportError:
+            print("Warning: Cannot import curriculum config, using default values")
     
     # 自动查找 vecnormalize.pkl
     vecnorm_path = args.vecnorm
     if vecnorm_path is None and args.model:
-        # 尝试在同目录或父目录查找
         model_dir = os.path.dirname(args.model)
         possible_paths = [
             os.path.join(model_dir, "vecnormalize.pkl"),
@@ -342,7 +414,15 @@ def main():
         model_path=args.model,
         vecnorm_path=vecnorm_path,
         manual_mode=args.manual,
+        tunnel_radius=args.tunnel_radius,
+        tunnel_length=args.tunnel_length,
         num_obstacles=args.num_obstacles,
+        obstacle_radius_min=args.obstacle_radius_min,
+        obstacle_radius_max=args.obstacle_radius_max,
+        obstacle_min_spacing=args.obstacle_spacing,
+        obstacle_start_x=args.obstacle_start_x,  # 【新增】传递障碍物起始位置
+        sample_distance=args.sample_distance,
+        num_points=args.num_points,
     )
     app.run()
 

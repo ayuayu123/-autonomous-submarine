@@ -52,10 +52,69 @@ class TunnelConfig:
     obstacle_radius_min: float = 0.7 # 障碍物最小半径 (米)
     obstacle_radius_max: float = 1 # 障碍物最大半径 (米)
     obstacle_start_x: float = 12.0  # 障碍物从 X=12 开始生成，给潜艇更多起步空间
+    obstacle_min_spacing: float = 1.5  # 障碍物之间的最小间距（米），潜艇半径约0.5m
+    
+    # 【课程学习新增】中心区域障碍物比例
+    # 这个比例的障碍物会强制生成在通道中心区域，防止"直通路"
+    center_obstacle_ratio: float = 0.4  # 40%障碍物在中心
     
     # 安全参数
     submarine_radius: float = 0.5   # 潜艇碰撞半径
     safe_spawn_radius: float = 1.0  # 潜艇生成位置随机偏移 (减小以保持居中)
+    
+    # 【新增】环境随机化参数 (Domain Randomization)
+    enable_randomization: bool = False  # 是否启用随机化
+    radius_variation: float = 0.0       # 隧道半径随机范围 (±米)
+    obstacle_count_variation: int = 0   # 障碍物数量随机范围 (±个)
+    obstacle_size_variation: float = 0.0  # 障碍物大小随机比例 (±%)
+    spawn_offset_variation: float = 0.0   # 起始位置随机偏移 (±米)
+    
+    def get_randomized_copy(self, rng: np.random.Generator) -> 'TunnelConfig':
+        """
+        获取随机化后的配置副本
+        
+        Args:
+            rng: 随机数生成器
+            
+        Returns:
+            随机化后的TunnelConfig副本
+        """
+        if not self.enable_randomization:
+            return self
+        
+        # 随机化隧道半径
+        new_radius = self.radius + rng.uniform(-self.radius_variation, self.radius_variation)
+        new_radius = max(4.0, new_radius)  # 最小4米
+        
+        # 随机化障碍物数量
+        new_num_obstacles = self.num_obstacles + rng.integers(-self.obstacle_count_variation, self.obstacle_count_variation + 1)
+        new_num_obstacles = max(0, new_num_obstacles)
+        
+        # 随机化障碍物大小参数
+        size_scale = 1.0 + rng.uniform(-self.obstacle_size_variation, self.obstacle_size_variation)
+        new_obs_min = self.obstacle_radius_min * size_scale
+        new_obs_max = self.obstacle_radius_max * size_scale
+        
+        # 随机化起始位置偏移（影响safe_spawn_radius）
+        new_spawn_radius = self.safe_spawn_radius + rng.uniform(0, self.spawn_offset_variation)
+        
+        return TunnelConfig(
+            radius=new_radius,
+            length=self.length,
+            start_x=self.start_x,
+            center_y=self.center_y,
+            center_z=self.center_z,
+            num_obstacles=new_num_obstacles,
+            obstacle_radius_min=new_obs_min,
+            obstacle_radius_max=new_obs_max,
+            obstacle_start_x=self.obstacle_start_x,
+            obstacle_min_spacing=self.obstacle_min_spacing,
+            center_obstacle_ratio=self.center_obstacle_ratio,
+            submarine_radius=self.submarine_radius,
+            safe_spawn_radius=new_spawn_radius,
+            enable_randomization=False,  # 副本不再需要随机化
+        )
+
 
 
 class ProvingGround:
@@ -121,47 +180,118 @@ class ProvingGround:
         self.obstacles = []
     
     def generate_obstacles(self):
-        """随机生成障碍物 (兼容旧模式)"""
-        # self.obstacles = [] # 不强制清空，允许混合
+        """
+        随机生成障碍物 (v5 - 角度区域均匀分布 + 强制外围)
         
+        核心改进（防止固定轨迹策略）:
+        1. 将角度空间分成8个区域，强制每个区域都有障碍物
+        2. 增加中心区域障碍物比例到50%
+        3. 某些X区段强制在外围生成障碍物，迫使Agent穿越中心
+        4. 障碍物之间保持最小间距
+        """
         cfg = self.config
-        attempts = 0
-        max_attempts = cfg.num_obstacles * 10
+        
+        # 障碍物最小间距
+        min_spacing = cfg.obstacle_min_spacing
+        
+        # 计算障碍物区域
+        obstacle_zone_start = cfg.obstacle_start_x
+        obstacle_zone_end = cfg.start_x + cfg.length
+        obstacle_zone_length = obstacle_zone_end - obstacle_zone_start
+        
+        # 【v5】将隧道分成多个X区段
+        num_segments = min(cfg.num_obstacles, 10)
+        obstacles_per_segment = cfg.num_obstacles // num_segments
+        extra_obstacles = cfg.num_obstacles % num_segments
+        segment_length = obstacle_zone_length / num_segments
+        
+        # 【v5 新增】角度区域追踪，确保障碍物覆盖各个方向
+        # 将圆周分成8个扇区（每个45度）
+        num_angle_sectors = 8
+        angle_sector_size = 2 * np.pi / num_angle_sectors
+        angle_sector_counts = [0] * num_angle_sectors  # 每个扇区的障碍物计数
+        
+        max_r = cfg.radius - cfg.obstacle_radius_max - cfg.submarine_radius
+        max_r = max(0.1, max_r)
+        
+        # 中心区域比例（从0.4提高到0.5）
+        center_ratio = getattr(cfg, 'center_obstacle_ratio', 0.5)
+        
         count = 0
+        for seg_idx in range(num_segments):
+            seg_start = obstacle_zone_start + seg_idx * segment_length
+            seg_end = seg_start + segment_length
+            
+            num_in_segment = obstacles_per_segment + (1 if seg_idx < extra_obstacles else 0)
+            
+            # 【v5 新增】某些区段强制外围障碍物
+            # 每隔3个区段，强制在外围生成至少1个障碍物
+            force_outer = (seg_idx % 3 == 1) and num_in_segment > 1
+            outer_generated = False
+            
+            attempts = 0
+            max_attempts_per_segment = num_in_segment * 50  # 增加尝试次数
+            segment_count = 0
+            
+            while segment_count < num_in_segment and attempts < max_attempts_per_segment:
+                attempts += 1
+                
+                x = self.rng.uniform(seg_start, seg_end)
+                
+                # 【v5 改进】YZ平面位置：考虑角度覆盖
+                # 找出当前最少障碍物的扇区
+                min_sector_count = min(angle_sector_counts)
+                sparse_sectors = [i for i, c in enumerate(angle_sector_counts) if c == min_sector_count]
+                target_sector = self.rng.choice(sparse_sectors)
+                
+                # 在目标扇区内生成角度
+                sector_start = target_sector * angle_sector_size
+                theta = self.rng.uniform(sector_start, sector_start + angle_sector_size)
+                
+                # 【v5】决定半径：考虑强制外围
+                if force_outer and not outer_generated:
+                    # 强制外围：半径在 [max_r*0.6, max_r] 范围
+                    r = self.rng.uniform(max_r * 0.6, max_r)
+                elif self.rng.random() < center_ratio:
+                    # 中心区域：r 在 [0, max_r*0.35] 范围（更集中于中心）
+                    r = self.rng.uniform(0, max_r * 0.35)
+                else:
+                    # 外围区域：sqrt 采样
+                    r = np.sqrt(self.rng.uniform(0.12, 1)) * max_r
+                
+                y = self.axis_y + r * np.cos(theta)
+                z = self.axis_z + r * np.sin(theta)
+                
+                obs_radius = self.rng.uniform(cfg.obstacle_radius_min, cfg.obstacle_radius_max)
+                
+                # 检查与已有障碍物的间距
+                pos = np.array([x, y, z])
+                too_close = False
+                for obs in self.obstacles:
+                    dist = np.linalg.norm(pos - obs.position)
+                    surface_dist = dist - obs_radius - obs.radius
+                    if surface_dist < min_spacing:
+                        too_close = True
+                        break
+                
+                if not too_close:
+                    self.obstacles.append(Obstacle(position=pos, radius=obs_radius))
+                    segment_count += 1
+                    count += 1
+                    
+                    # 更新扇区计数
+                    angle_sector_counts[target_sector] += 1
+                    
+                    # 标记外围障碍物已生成
+                    if force_outer and r > max_r * 0.5:
+                        outer_generated = True
         
-        while count < cfg.num_obstacles and attempts < max_attempts:
-            attempts += 1
-            
-            # 随机位置 (在通道内)
-            obstacle_end_x = cfg.start_x + cfg.length
-            x = self.rng.uniform(cfg.obstacle_start_x, obstacle_end_x)
-            
-            # 在圆形截面内随机采样 (极坐标)
-            # 修复：障碍物必须完全在隧道内，留出障碍物半径的边距
-            max_r = cfg.radius - cfg.obstacle_radius_max - cfg.submarine_radius
-            r = self.rng.uniform(0, max(0.1, max_r))  # 确保最小值为0.1
-            theta = self.rng.uniform(0, 2 * np.pi)
-            
-            y = self.axis_y + r * np.cos(theta)
-            z = self.axis_z + r * np.sin(theta)
-            
-            # 随机半径
-            obs_radius = self.rng.uniform(cfg.obstacle_radius_min, cfg.obstacle_radius_max)
-            
-            # 检查是否与已有障碍物重叠太多
-            pos = np.array([x, y, z])
-            too_close = False
-            for obs in self.obstacles:
-                dist = np.linalg.norm(pos - obs.position)
-                if dist < (obs_radius + obs.radius) * 0.3:
-                    too_close = True
-                    break
-            
-            if not too_close:
-                self.obstacles.append(Obstacle(position=pos, radius=obs_radius))
-                count += 1
-        
-        print(f"[ProvingGround] Generated {count} random obstacles (Total: {len(self.obstacles)})")
+        # 打印角度分布统计
+        if count >= cfg.num_obstacles:
+            print(f"[ProvingGround v5] Generated {count} obstacles")
+            print(f"  Angle distribution: {angle_sector_counts} (8 sectors)")
+        else:
+            print(f"[ProvingGround v5] Warning: Only generated {count}/{cfg.num_obstacles} obstacles")
     
     def reset(self, seed: Optional[int] = None):
         """重置环境，重新生成障碍物"""
@@ -184,7 +314,8 @@ class ProvingGround:
         offset_r = self.rng.uniform(0, cfg.safe_spawn_radius)
         offset_theta = self.rng.uniform(0, 2 * np.pi)
         
-        x = cfg.start_x + 5.0  # 稍微前移
+        # 潜艇生成在 X=2.0 位置，距离障碍物开始(X=10.0)有约8m安全距离
+        x = cfg.start_x + 2.0
         y = self.axis_y + offset_r * np.cos(offset_theta)
         z = self.axis_z + offset_r * np.sin(offset_theta)
         
@@ -274,19 +405,28 @@ class ProvingGround:
         r = np.sqrt(dy**2 + dz**2)
         return self.config.radius - r
     
-    def get_nearby_obstacles(self, position: np.ndarray, max_distance: float = 50.0, max_count: int = 10) -> List[Tuple[float, np.ndarray]]:
+    def get_nearby_obstacles(self, position: np.ndarray, max_distance: float = 50.0, max_count: int = 10) -> List[Tuple[float, int, np.ndarray, float]]:
         """
         获取附近的障碍物
         
+        Args:
+            position: [x, y, z] 当前位置
+            max_distance: 最大搜索距离
+            max_count: 最大返回数量
+        
         Returns:
-            List of (distance, relative_position) tuples, sorted by distance
+            List of (distance, obstacle_index, relative_position, radius) tuples, sorted by distance
+            - distance: 到障碍物表面的距离
+            - obstacle_index: 障碍物在列表中的索引（用于追踪）
+            - relative_position: 障碍物相对于当前位置的向量
+            - radius: 障碍物半径
         """
         nearby = []
-        for obs in self.obstacles:
+        for idx, obs in enumerate(self.obstacles):
             rel_pos = obs.position - position
             dist = np.linalg.norm(rel_pos) - obs.radius  # 到障碍物表面的距离
             if dist < max_distance:
-                nearby.append((dist, rel_pos, obs.radius))
+                nearby.append((dist, idx, rel_pos, obs.radius))
         
         nearby.sort(key=lambda x: x[0])
         return nearby[:max_count]

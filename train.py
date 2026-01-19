@@ -19,7 +19,8 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import (
     EvalCallback, 
     CheckpointCallback,
-    CallbackList
+    CallbackList,
+    BaseCallback
 )
 from stable_baselines3.common.vec_env import SubprocVecEnv, DummyVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
@@ -27,6 +28,154 @@ from stable_baselines3.common.monitor import Monitor
 from src.rl.submarine_env import SubmarineEnv
 from src.rl.tunnel import TunnelConfig
 from src.rl.point_cloud_sampler import PointCloudConfig
+from src.rl.reward_logger_callback import RewardLoggerCallback
+
+
+class SuccessRateCallback(BaseCallback):
+    """
+    自定义回调：追踪训练过程中的成功率
+    
+    每隔一定步数输出:
+    - 成功率 (到达终点的比例)
+    - 碰撞类型分布 (边界/障碍物)
+    - 平均进度
+    """
+    
+    def __init__(self, check_freq: int = 10000, verbose: int = 1):
+        super().__init__(verbose)
+        self.check_freq = check_freq
+        
+        # 统计变量
+        self.episode_count = 0
+        self.success_count = 0
+        self.boundary_collision_count = 0
+        self.obstacle_collision_count = 0
+        self.timeout_count = 0
+        self.total_progress = 0.0
+        
+        # 用于周期性重置的计数
+        self.period_episode_count = 0
+        self.period_success_count = 0
+        self.period_boundary_collision_count = 0
+        self.period_obstacle_collision_count = 0
+        self.period_timeout_count = 0
+        self.period_total_progress = 0.0
+        
+    def _on_step(self) -> bool:
+        # 检查是否有 episode 结束
+        # VecEnv 的 infos 是一个列表，dones 是 numpy array
+        infos = self.locals.get('infos', [])
+        dones = self.locals.get('dones', [])
+        
+        # 确保 dones 是可迭代的
+        if hasattr(dones, '__iter__'):
+            for i, done in enumerate(dones):
+                if done:
+                    self.episode_count += 1
+                    self.period_episode_count += 1
+                    
+                    # 获取对应的 info
+                    if i < len(infos):
+                        info = infos[i]
+                        # 尝试从不同位置获取终止信息
+                        terminal_info = info.get('terminal_info', info)
+                        
+                        # 获取详细信息
+                        goal_reached = terminal_info.get('goal_reached', False)
+                        collision = terminal_info.get('collision', False)
+                        collision_reason = terminal_info.get('collision_reason', '')
+                        progress = terminal_info.get('progress', 0.0)
+                        
+                        self.total_progress += progress
+                        self.period_total_progress += progress
+                        
+                        if goal_reached:
+                            self.success_count += 1
+                            self.period_success_count += 1
+                        elif collision:
+                            if collision_reason == 'boundary':
+                                self.boundary_collision_count += 1
+                                self.period_boundary_collision_count += 1
+                            else:  # obstacle
+                                self.obstacle_collision_count += 1
+                                self.period_obstacle_collision_count += 1
+                        else:  # timeout
+                            self.timeout_count += 1
+                            self.period_timeout_count += 1
+        
+        # 周期性输出统计（无论有没有episode完成都输出）
+        if self.n_calls % self.check_freq == 0:
+            self._print_stats()
+            self._reset_period_stats()
+        
+        return True
+    
+    def _print_stats(self):
+        """打印统计信息"""
+        print(f"\n{'='*60}")
+        print(f"[SuccessRateCallback] Step {self.num_timesteps:,}")
+        print(f"{'='*60}")
+        
+        if self.period_episode_count > 0:
+            success_rate = self.period_success_count / self.period_episode_count * 100
+            avg_progress = self.period_total_progress / self.period_episode_count * 100
+            print(f"  Period Episodes: {self.period_episode_count}")
+            print(f"  Success Rate: {success_rate:.1f}% ({self.period_success_count}/{self.period_episode_count})")
+            print(f"  Avg Progress: {avg_progress:.1f}%")
+            print(f"  Failures: boundary={self.period_boundary_collision_count}, obstacle={self.period_obstacle_collision_count}, timeout={self.period_timeout_count}")
+        else:
+            print(f"  Period Episodes: 0 (no episodes completed in this period)")
+        
+        # 总体统计
+        if self.episode_count > 0:
+            total_success_rate = self.success_count / self.episode_count * 100
+            print(f"  --- Total: {total_success_rate:.1f}% success ({self.success_count}/{self.episode_count}) ---")
+        else:
+            print(f"  --- Total: No episodes completed yet ---")
+        print(f"{'='*60}\n")
+    
+    def _reset_period_stats(self):
+        """重置周期统计"""
+        self.period_episode_count = 0
+        self.period_success_count = 0
+        self.period_boundary_collision_count = 0
+        self.period_obstacle_collision_count = 0
+        self.period_timeout_count = 0
+        self.period_total_progress = 0.0
+
+
+class SaveVecNormalizeCallback(BaseCallback):
+    """
+    自定义回调：在每次保存 best_model 时也保存 VecNormalize 统计信息
+    
+    这样 eval_model.py 就能自动找到对应的 vecnormalize.pkl
+    """
+    
+    def __init__(self, save_path: str, train_env, verbose: int = 1):
+        super().__init__(verbose)
+        self.save_path = save_path
+        self.train_env = train_env
+        self.last_best_model_path = None
+        
+    def _on_step(self) -> bool:
+        # 检查 best_model 目录下是否有新的模型被保存
+        best_model_path = os.path.join(self.save_path, "best_model.zip")
+        
+        if os.path.exists(best_model_path):
+            # 检查文件修改时间，判断是否是新保存的
+            current_mtime = os.path.getmtime(best_model_path)
+            
+            if self.last_best_model_path != current_mtime:
+                # 新的 best_model 被保存了，同时保存 VecNormalize
+                vecnorm_path = os.path.join(self.save_path, "vecnormalize.pkl")
+                self.train_env.save(vecnorm_path)
+                
+                if self.verbose > 0:
+                    print(f"[SaveVecNormalizeCallback] VecNormalize saved to: {vecnorm_path}")
+                
+                self.last_best_model_path = current_mtime
+        
+        return True
 
 
 def make_env(rank: int, seed: int = 0, 
@@ -41,7 +190,7 @@ def make_env(rank: int, seed: int = 0,
             tunnel_config=tunnel_config,
             point_cloud_config=point_cloud_config,
             point_cloud_history_len=point_cloud_history_len,
-            max_steps=6000
+            max_steps=1200
         )
         env = Monitor(env)
         env.reset(seed=seed + rank)
@@ -61,9 +210,9 @@ def train(args):
     
     print(f"Training output directory: {log_dir}")
     
-    # 环境配置
+    # 环境配置 (v13 - 增大管道半径，给更多机动空间)
     tunnel_config = TunnelConfig(
-        radius=5.0,
+        radius=8.0,              # 从5.0增大到8.0，更多机动空间
         length=50.0,
         center_z=100.0,
         num_obstacles=args.num_obstacles,
@@ -71,11 +220,12 @@ def train(args):
         obstacle_radius_max=1.0,
     )
     
-    # 点云采样配置
+    # 点云采样配置 (固定采样版本)
     point_cloud_config = PointCloudConfig(
-        num_points=256,
-        obstacle_points_ratio=0.7,
-        normalize_range=25.0,  # 视野范围 25米
+        num_points=384,               # 增加到384点
+        obstacle_points_ratio=0.6,    # 60%给障碍物
+        normalize_range=25.0,
+        points_per_obstacle=32,       # 每个障碍物32个固定采样点
     )
     
     # 创建并行环境
@@ -189,8 +339,37 @@ def train(args):
         n_eval_episodes=5,
         deterministic=True,
     )
+        
+    # 成功率追踪回调
+    success_rate_callback = SuccessRateCallback(
+        check_freq=2000,  # 每2000步输出一次成功率
+        verbose=1
+    )
     
-    callbacks = CallbackList([checkpoint_callback, eval_callback])
+    # 【新增】VecNormalize 自动保存回调
+    # 每次 best_model 更新时，同时保存 vecnormalize.pkl
+    save_vecnorm_callback = SaveVecNormalizeCallback(
+        save_path=os.path.join(log_dir, "best_model"),
+        train_env=env,
+        verbose=1
+    )
+    
+    # 【新增】奖励组件日志回调
+    # 每个 episode 结束时将奖励组件统计写入 CSV 文件
+    reward_logger_callback = RewardLoggerCallback(
+        log_dir=log_dir,
+        log_freq=1,  # 每个 episode 都记录
+        verbose=1,
+        csv_filename="reward_components.csv"
+    )
+    
+    callbacks = CallbackList([
+        checkpoint_callback, 
+        eval_callback, 
+        success_rate_callback, 
+        save_vecnorm_callback,
+        reward_logger_callback  # 奖励日志
+    ])
     
     # 训练信息
     print(f"\n{'='*60}")
@@ -237,7 +416,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train submarine obstacle avoidance with PPO (Hybrid LSTM Mode)")
     
     # 训练参数
-    parser.add_argument("--total-timesteps", type=int, default=1_000_000,
+    parser.add_argument("--total-timesteps", type=int, default=2_000_000,
                         help="Total training timesteps")
     parser.add_argument("--n-envs", type=int, default=4,
                         help="Number of parallel environments")
@@ -245,7 +424,7 @@ def main():
                         help="Random seed")
     
     # PPO 超参数
-    parser.add_argument("--learning-rate", type=float, default=3e-4,
+    parser.add_argument("--learning-rate", type=float, default=1e-4,
                         help="Learning rate")
     parser.add_argument("--n-steps", type=int, default=2048,
                         help="Number of steps per environment per update")

@@ -224,6 +224,79 @@ class UI:
         glPopMatrix()
         glMatrixMode(GL_MODELVIEW)
 
+class TunnelVisual:
+    """Class responsible for drawing the tunnel and obstacles."""
+    def __init__(self):
+        self.quadric = gluNewQuadric()
+        gluQuadricDrawStyle(self.quadric, GLU_LINE)
+        self.obstacle_quadric = gluNewQuadric()
+    
+    def draw(self, actor):
+        """Draw the tunnel based on TunnelActor configuration."""
+        if not actor.config:
+            return
+            
+        config = actor.config
+        center_y = config.center_y
+        center_z = config.center_z
+        radius = config.radius
+        length = config.length
+        start_x = config.start_x
+        
+        glDisable(GL_LIGHTING)
+        glColor3f(0.2, 0.5, 0.8)  # Blue wireframe
+        
+        # Draw rings along the tunnel
+        # Draw every 10 meters
+        num_rings = int(length / 10) + 1
+        for i in range(num_rings):
+            x = start_x + i * 10
+            glPushMatrix()
+            glTranslate(x, center_y, center_z)
+            glRotate(90, 0, 1, 0)  # Align with X axis
+            gluDisk(self.quadric, radius - 0.5, radius, 32, 1)
+            glPopMatrix()
+        
+        glEnable(GL_LIGHTING)
+
+
+class ObstacleVisual:
+    """Class responsible for drawing spherical obstacles."""
+    def __init__(self):
+        self.quadric = gluNewQuadric()
+        
+    def draw(self, actor):
+        # Red sphere
+        glColor3f(0.8, 0.2, 0.2)
+        gluSphere(self.quadric, actor.radius, 16, 16)
+
+
+class PointCloudVisual:
+    """Class responsible for drawing the LiDAR point cloud."""
+    def __init__(self):
+        self.point_size = 2.0
+
+    def draw(self, points):
+        """
+        Draw point cloud.
+        Args:
+            points: np.ndarray of shape (N, 3) in Body Frame.
+        """
+        if points is None or len(points) == 0:
+            return
+
+        glDisable(GL_LIGHTING)
+        glColor3f(0.0, 1.0, 1.0) # Cyan points
+        glPointSize(self.point_size)
+        
+        glBegin(GL_POINTS)
+        for p in points:
+            glVertex3f(p[0], p[1], p[2])
+        glEnd()
+        
+        glEnable(GL_LIGHTING)
+
+
 class Renderer:
     def __init__(self, width, height):
         self.width = width
@@ -231,12 +304,20 @@ class Renderer:
         OpenGLUtils.init_gl(width, height)
         self.sub_visual = SubmarineVisual()
         self.target_visual = TargetPointVisual()
+        self.obstacle_visual = ObstacleVisual()
+        self.tunnel_visual = TunnelVisual()
+        self.point_cloud_visual = PointCloudVisual()
         self.ui = UI()
         
-        # Camera State
-        self.cam_dist = 6.0
-        self.cam_yaw_rel = math.pi 
-        self.cam_pitch_rel = -0.3
+        # Camera State (Free Camera)
+        self.cam_pos = np.array([-10.0, 0.0, 0.0], dtype=np.float32)
+        self.cam_yaw = 0.0   # Radians
+        self.cam_pitch = 0.0 # Radians
+        self.cam_speed = 0.5
+        
+        # Tunnel reference (set by eval_sim.py)
+        self.tunnel = None
+        self.tunnel_config = None
         
         # Initial Mouse delta
         pygame.mouse.get_rel()
@@ -247,57 +328,129 @@ class Renderer:
         OpenGLUtils.resize(width, height)
 
     def update_camera_input(self):
+        # Mouse Rotation (Right Click)
         if pygame.mouse.get_pressed()[2]: # Right click
             mx, my = pygame.mouse.get_rel()
-            self.cam_yaw_rel += mx * 0.005
-            self.cam_pitch_rel += my * 0.005
-            self.cam_pitch_rel = max(min(self.cam_pitch_rel, 1.5), -1.5)
+            self.cam_yaw += mx * 0.002
+            self.cam_pitch += my * 0.002
+            self.cam_pitch = max(min(self.cam_pitch, 1.5), -1.5)
         else:
             pygame.mouse.get_rel()
+            
+        # Keyboard Movement (WASD)
+        keys = pygame.key.get_pressed()
+        
+        # Calculate forward and right vectors based on yaw
+        # Forward vector in horizontal plane
+        fwd_x = math.cos(self.cam_yaw)
+        fwd_y = math.sin(self.cam_yaw)
+        # fwd_z = 0
+        
+        # Right vector
+        rgt_x = math.sin(self.cam_yaw)
+        rgt_y = -math.cos(self.cam_yaw)
+        
+        speed = self.cam_speed
+        if keys[K_LSHIFT] or keys[K_RSHIFT]:
+            speed *= 2.0
+            
+        if keys[K_w]:
+            self.cam_pos[0] += fwd_x * speed
+            self.cam_pos[1] += fwd_y * speed
+            self.cam_pos[2] -= math.sin(self.cam_pitch) * speed # Move in look direction including pitch? Or just horizontal?
+            # Usually FPS camera moves horizontally on W/S, but "free cam" might fly.
+            # Let's make it fly in the look direction.
+            # Re-calculating proper 3D forward vector
+            # fx = cos(yaw)cos(pitch), fy = sin(yaw)cos(pitch), fz = -sin(pitch)
+            self.cam_pos[0] += math.cos(self.cam_yaw) * math.cos(self.cam_pitch) * speed
+            self.cam_pos[1] += math.sin(self.cam_yaw) * math.cos(self.cam_pitch) * speed
+            self.cam_pos[2] += -math.sin(self.cam_pitch) * speed
 
-    def render(self, logic_stage):
+        if keys[K_s]:
+            self.cam_pos[0] -= math.cos(self.cam_yaw) * math.cos(self.cam_pitch) * speed
+            self.cam_pos[1] -= math.sin(self.cam_yaw) * math.cos(self.cam_pitch) * speed
+            self.cam_pos[2] -= -math.sin(self.cam_pitch) * speed
+
+        if keys[K_a]:
+            # Strafe Left
+            # Right vector is (sin(yaw), -cos(yaw), 0)
+            # Left is (-sin(yaw), cos(yaw), 0)
+            self.cam_pos[0] += math.sin(self.cam_yaw) * speed
+            self.cam_pos[1] += -math.cos(self.cam_yaw) * speed
+
+        if keys[K_d]:
+            # Strafe Right
+            self.cam_pos[0] -= math.sin(self.cam_yaw) * speed
+            self.cam_pos[1] -= -math.cos(self.cam_yaw) * speed
+            
+        # Up/Down (E/Q or Space/Ctrl) - Optional
+        if keys[K_e]:
+            self.cam_pos[2] += speed
+        if keys[K_q]:
+            self.cam_pos[2] -= speed
+
+    def render(self, logic_stage, point_cloud=None):
         self.update_camera_input()
         
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
         glLoadIdentity()
         
-        # Camera Logic - Focus on the first actor (Submarine)
-        actors = logic_stage.get_actors()
-        if not actors:
-            return
-
-        main_actor = actors[0]
-        pos = main_actor.position
-        # Roll, Pitch, Yaw
-        orientation = main_actor.orientation 
+        # Camera LookAt
+        # Eye position: self.cam_pos
+        # Target position: self.cam_pos + forward_vector
         
-        # Camera Position Calculation
-        cx_b = self.cam_dist * math.cos(self.cam_pitch_rel) * math.cos(self.cam_yaw_rel)
-        cy_b = self.cam_dist * math.cos(self.cam_pitch_rel) * math.sin(self.cam_yaw_rel)
-        cz_b = -self.cam_dist * math.sin(self.cam_pitch_rel)
-        cam_offset_body = np.array([cx_b, cy_b, cz_b])
+        cx = self.cam_pos[0]
+        cy = self.cam_pos[1]
+        cz = self.cam_pos[2]
         
-        # Orientation is [roll, pitch, yaw]
-        R_vehicle = Rzyx(orientation[0], orientation[1], orientation[2])
-        cam_pos_world = pos + R_vehicle @ cam_offset_body
+        lx = cx + math.cos(self.cam_yaw) * math.cos(self.cam_pitch)
+        ly = cy + math.sin(self.cam_yaw) * math.cos(self.cam_pitch)
+        lz = cz - math.sin(self.cam_pitch)
         
-        gluLookAt(cam_pos_world[0], cam_pos_world[1], cam_pos_world[2],
-                  pos[0], pos[1], pos[2],
-                  0, 0, -1)
+        gluLookAt(cx, cy, cz,
+                  lx, ly, lz,
+                  0, 0, -1) # Z is up? No, in this coord system Z seems to be...
+                  # In OpenGLUtils.draw_axes: Z is Blue.
+                  # In SubmarineVisual: Cylinder length 1.6 along Z (then rotated).
+                  # In SubmarineEnv: spawn_pos [x, 0, 0], eta[2] is depth?
+                  # Usually NED: x North, y East, z Down.
+                  # OpenGL default: y Up, -z Forward.
+                  # Let's check `draw_axes`: X Red, Y Green, Z Blue.
+                  # Submarine hull: Cylinder along Z, rotated 90 around Y -> Along X.
+                  # So X is forward for submarine.
+                  # Fin logic: Top fin +Y. Starboard +Z.
+                  # This suggests Y is Up/Down (Top fin), Z is Right/Left (Starboard).
+                  # If Y is Up, then gluLookAt up vector should be (0, 1, 0) or (0, 0, -1) if Z is depth (Down).
+                  # Let's check previous code: gluLookAt(..., 0, 0, -1).
+                  # So Up vector is (0, 0, -1). This implies Z is Down (Depth).
+                  # And Y is... wait.
+                  # Previous code:
+                  # cx_b = dist * cos(pitch) * cos(yaw)
+                  # cy_b = dist * cos(pitch) * sin(yaw)
+                  # cz_b = -dist * sin(pitch)
+                  # If pitch=0, z=0. If pitch positive (look up?), z negative (up?).
+                  # Let's stick to (0, 0, -1) as UP if the world is NED (Z down).
         
         # Light
-        glLightfv(GL_LIGHT0, GL_POSITION, (pos[0]+10, pos[1]+10, pos[2]-20, 1))
+        glLightfv(GL_LIGHT0, GL_POSITION, (cx, cy, cz, 1)) # Light at camera
+        
+        # Draw tunnel if available
+        # ... (same as before)
         
         # Grid
-        glPushMatrix()
-        grid_step = 20
-        grid_x = round(pos[0] / grid_step) * grid_step
-        grid_y = round(pos[1] / grid_step) * grid_step
-        glTranslate(grid_x, grid_y, 0)
-        OpenGLUtils.draw_grid(size=100, step=5)
-        glPopMatrix()
+        if self.tunnel is None:
+            glPushMatrix()
+            grid_step = 20
+            grid_x = round(cx / grid_step) * grid_step
+            grid_y = round(cy / grid_step) * grid_step
+            glTranslate(grid_x, grid_y, 0)
+            OpenGLUtils.draw_grid(size=100, step=5)
+            glPopMatrix()
         
         # Draw all actors
+        actors = logic_stage.get_actors()
+        main_actor = actors[0] if actors else None
+        
         for actor in actors:
             glPushMatrix()
             glTranslate(actor.position[0], actor.position[1], actor.position[2])
@@ -306,15 +459,25 @@ class Renderer:
             glRotate(math.degrees(actor.orientation[0]), 1, 0, 0) # Roll
             
             # Select visual based on actor type/name
-            if hasattr(actor, 'radius'):
+            actor_type = type(actor).__name__
+            if actor_type == 'TargetPointActor':
                 self.target_visual.draw(actor)
+            elif actor_type == 'ObstacleActor':
+                self.obstacle_visual.draw(actor)
+            elif actor_type == 'TunnelActor':
+                self.tunnel_visual.draw(actor)
             else:
                 self.sub_visual.draw(actor)
+                # Draw point cloud attached to submarine
+                if actor == main_actor and point_cloud is not None:
+                    self.point_cloud_visual.draw(point_cloud)
             
-            OpenGLUtils.draw_axes(2.0)
+            # OpenGLUtils.draw_axes(2.0)
             glPopMatrix()
             
         # Draw HUD for main actor
-        self.ui.draw_hud(self.width, self.height, main_actor)
+        if main_actor:
+            self.ui.draw_hud(self.width, self.height, main_actor)
         
         pygame.display.flip()
+

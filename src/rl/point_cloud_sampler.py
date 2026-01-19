@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-point_cloud_sampler.py: 点云采样器，对障碍物和隧道边界表面进行随机采样
+point_cloud_sampler.py: 点云采样器 (固定采样版本)
 
-替代原有的 lidar_sensor.py 射线投射方式，直接生成 XYZ 坐标点云。
+使用确定性采样模式：
+- 障碍物：Fibonacci 球面均匀采样 (每次采样位置固定)
+- 隧道壁：均匀网格采样 (每次采样位置固定)
+
+这样可以让 LSTM 更好地追踪障碍物的运动轨迹。
 """
 import numpy as np
 from typing import Tuple, Optional, List
@@ -14,21 +18,24 @@ from dataclasses import dataclass
 class PointCloudConfig:
     """点云采样配置"""
     # 采样参数
-    num_points: int = 64              # 总采样点数 (从256减少到64，降低LSTM负担)
-    obstacle_points_ratio: float = 0.5  # 障碍物采样点占比 (管道壁占比提高到50%)
+    num_points: int = 512             # 总采样点数 (从384增加到512，提高精度)
+    obstacle_points_ratio: float = 0.5  # 障碍物采样点占比 (50%给障碍物，50%给隧道壁)
     
     # 距离过滤参数 (视野范围)
-    sample_distance: float = 25.0     # 采样距离 (米) - 再增加一点视野
+    sample_distance: float = 25.0     # 采样距离 (米)
     
     # 归一化参数
     normalize_range: float = 25.0     # 归一化范围 (与采样距离匹配)
+    
+    # 每个障碍物的固定采样点数
+    points_per_obstacle: int = 32     # 每个障碍物采样32个固定点
 
 
 class PointCloudSampler:
     """
-    点云采样器
+    点云采样器 (固定采样版本)
     
-    对障碍物表面和隧道边界进行随机采样，生成相对于潜艇的 XYZ 坐标点云。
+    使用确定性采样，生成时序一致的点云，便于 LSTM 学习。
     """
     
     def __init__(self, config: Optional[PointCloudConfig] = None):
@@ -37,17 +44,64 @@ class PointCloudSampler:
         # 计算障碍物和隧道壁的采样点数
         self.num_obstacle_points = int(self.config.num_points * self.config.obstacle_points_ratio)
         self.num_tunnel_points = self.config.num_points - self.num_obstacle_points
+        
+        # 预计算 Fibonacci 球面采样的固定方向 (单位球面上的点)
+        self._fibonacci_directions = self._generate_fibonacci_sphere(self.config.points_per_obstacle)
+        
+        # 预计算隧道壁采样的固定角度
+        self._tunnel_angles, self._tunnel_x_offsets = self._generate_tunnel_grid()
+    
+    def _generate_fibonacci_sphere(self, n_points: int) -> np.ndarray:
+        """
+        生成 Fibonacci 球面上的均匀分布点 (单位方向向量)
+        
+        这是一种在球面上均匀分布点的经典算法。
+        """
+        directions = []
+        phi = np.pi * (3.0 - np.sqrt(5.0))  # 黄金角
+        
+        for i in range(n_points):
+            y = 1 - (i / float(n_points - 1)) * 2  # y from 1 to -1
+            radius = np.sqrt(1 - y * y)
+            theta = phi * i
+            
+            x = np.cos(theta) * radius
+            z = np.sin(theta) * radius
+            
+            directions.append(np.array([x, y, z]))
+        
+        return np.array(directions)
+    
+    def _generate_tunnel_grid(self) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        生成隧道壁采样的固定网格
+        
+        返回：(角度数组, X偏移数组)
+        """
+        # 在圆周上均匀分布角度
+        n_angular = 16  # 圆周方向16个采样点
+        n_axial = self.num_tunnel_points // n_angular  # 轴向方向的采样点数
+        
+        angles = np.linspace(0, 2 * np.pi, n_angular, endpoint=False)
+        
+        # X 方向的偏移 (相对于潜艇位置)
+        # 后方30%，前方70%
+        x_offsets = np.linspace(-self.config.sample_distance * 0.3, 
+                                 self.config.sample_distance * 0.7, 
+                                 n_axial)
+        
+        return angles, x_offsets
     
     def sample(self, 
                submarine_position: np.ndarray,
                rotation_matrix: np.ndarray,
                tunnel) -> np.ndarray:
         """
-        执行点云采样
+        执行点云采样 (固定模式)
         
         Args:
             submarine_position: [x, y, z] 潜艇位置 (世界坐标系)
-            rotation_matrix: 3x3 旋转矩阵 (机体到世界)，用于将点云转换到机体坐标系
+            rotation_matrix: 3x3 旋转矩阵 (机体到世界)
             tunnel: ProvingGround/CylinderTunnel 对象
             
         Returns:
@@ -55,10 +109,10 @@ class PointCloudSampler:
         """
         points_world = []
         
-        # 1. 采样障碍物表面 (只采样距离内的障碍物!)
-        obstacle_points = self._sample_obstacles(
+        # 1. 采样障碍物表面 (固定采样)
+        obstacle_points = self._sample_obstacles_fixed(
             tunnel.obstacles, 
-            submarine_position,  # 新增：传入潜艇位置用于距离过滤
+            submarine_position,
             self.num_obstacle_points
         )
         points_world.extend(obstacle_points)
@@ -67,15 +121,24 @@ class PointCloudSampler:
         actual_obstacle_points = len(obstacle_points)
         extra_tunnel_points = self.num_obstacle_points - actual_obstacle_points
         
-        # 2. 采样隧道壁 (增加采样点数以补充缺失的障碍物点)
-        tunnel_points = self._sample_tunnel_wall(
+        # 2. 采样隧道壁 (固定采样)
+        tunnel_points = self._sample_tunnel_wall_fixed(
             tunnel.config, 
             tunnel.axis_y, 
             tunnel.axis_z,
-            submarine_position[0],  # 围绕潜艇当前 X 位置采样
+            submarine_position[0],
             self.num_tunnel_points + extra_tunnel_points
         )
         points_world.extend(tunnel_points)
+        
+        # 确保点数正确
+        if len(points_world) < self.config.num_points:
+            # 用零点填充 (表示没有检测到)
+            for _ in range(self.config.num_points - len(points_world)):
+                points_world.append(submarine_position + np.array([self.config.sample_distance, 0, 0]))
+        elif len(points_world) > self.config.num_points:
+            # 截断
+            points_world = points_world[:self.config.num_points]
         
         # 转换为 numpy 数组
         points_world = np.array(points_world)  # (N, 3)
@@ -89,18 +152,12 @@ class PointCloudSampler:
         
         return relative_body
     
-    def _sample_obstacles(self, obstacles: List, submarine_position: np.ndarray, 
-                          num_points: int) -> List[np.ndarray]:
+    def _sample_obstacles_fixed(self, obstacles: List, submarine_position: np.ndarray, 
+                                 num_points: int) -> List[np.ndarray]:
         """
-        对距离范围内的障碍物表面进行采样
+        对距离范围内的障碍物表面进行固定采样
         
-        Args:
-            obstacles: 障碍物列表
-            submarine_position: [x, y, z] 潜艇位置
-            num_points: 总采样点数
-            
-        Returns:
-            points: 采样点列表 (世界坐标系)
+        使用预计算的 Fibonacci 球面方向，确保每帧采样位置一致。
         """
         # 过滤出距离范围内的障碍物
         nearby_obstacles = []
@@ -109,110 +166,84 @@ class PointCloudSampler:
             if dist < self.config.sample_distance:
                 nearby_obstacles.append((dist, obs))
         
-        # 按距离排序（近的优先采样更多点）
+        # 按距离排序（近的优先）
         nearby_obstacles.sort(key=lambda x: x[0])
         
         if len(nearby_obstacles) == 0:
-            # 如果附近没有障碍物，返回空列表，后面会用隧道壁填充
             return []
         
         points = []
         
         # 计算每个障碍物应分配的采样点数
-        # 使用距离倒数加权：越近的障碍物采样点越多
         weights = []
         for dist, obs in nearby_obstacles:
-            # 距离权重：距离越近权重越高
-            dist_weight = 1.0 / (dist + 1.0)  # +1防止除零
-            # 面积权重
+            dist_weight = 1.0 / (dist + 1.0)
             area_weight = obs.radius ** 2
             weights.append(dist_weight * area_weight)
         
         total_weight = sum(weights)
         
         for i, (dist, obs) in enumerate(nearby_obstacles):
-            # 按权重分配采样点数
             weight_ratio = weights[i] / total_weight
             n_samples = max(1, int(num_points * weight_ratio))
+            n_samples = min(n_samples, self.config.points_per_obstacle)
             
-            # 在球体表面均匀采样
-            sphere_points = self._sample_sphere_surface(
-                center=obs.position,
-                radius=obs.radius,
-                num_points=n_samples
-            )
-            points.extend(sphere_points)
-        
-        # 如果采样点数不足，从最近的障碍物补充
-        while len(points) < num_points and len(nearby_obstacles) > 0:
-            _, obs = nearby_obstacles[0]  # 最近的障碍物
-            extra_point = self._sample_sphere_surface(obs.position, obs.radius, 1)
-            points.extend(extra_point)
+            # 使用固定的 Fibonacci 方向采样
+            for j in range(n_samples):
+                if j < len(self._fibonacci_directions):
+                    direction = self._fibonacci_directions[j]
+                    point = obs.position + direction * obs.radius
+                    points.append(point)
         
         # 如果采样点数过多，优先保留近距离的点
         if len(points) > num_points:
-            # 按距离排序点云
             points_with_dist = [(np.linalg.norm(p - submarine_position), p) for p in points]
             points_with_dist.sort(key=lambda x: x[0])
             points = [p for _, p in points_with_dist[:num_points]]
         
         return points
     
-    def _sample_sphere_surface(self, center: np.ndarray, radius: float, 
-                                num_points: int) -> List[np.ndarray]:
+    def _sample_tunnel_wall_fixed(self, config, axis_y: float, axis_z: float,
+                                   submarine_x: float, num_points: int) -> List[np.ndarray]:
         """
-        在球体表面均匀随机采样
+        对隧道壁 (圆柱面) 进行固定网格采样
         
-        使用标准的球面均匀采样算法
-        """
-        points = []
-        
-        for _ in range(num_points):
-            # 均匀球面采样
-            phi = np.random.uniform(0, 2 * np.pi)
-            cos_theta = np.random.uniform(-1, 1)
-            sin_theta = np.sqrt(1 - cos_theta ** 2)
-            
-            x = center[0] + radius * sin_theta * np.cos(phi)
-            y = center[1] + radius * sin_theta * np.sin(phi)
-            z = center[2] + radius * cos_theta
-            
-            points.append(np.array([x, y, z]))
-        
-        return points
-    
-    def _sample_tunnel_wall(self, config, axis_y: float, axis_z: float,
-                            submarine_x: float, num_points: int) -> List[np.ndarray]:
-        """
-        对隧道壁 (圆柱面) 进行采样
-        
-        Args:
-            config: TunnelConfig 对象
-            axis_y, axis_z: 隧道中心轴坐标
-            submarine_x: 潜艇当前 X 坐标
-            num_points: 采样点数
-            
-        Returns:
-            points: 采样点列表 (世界坐标系)
+        使用预计算的角度和X偏移，确保每帧采样位置一致。
         """
         points = []
         
-        # 在潜艇前后一定范围内采样隧道壁 (使用采样距离配置)
-        x_range = self.config.sample_distance  # 使用配置的采样距离 (10m)
-        x_min = max(config.start_x, submarine_x - x_range * 0.3)  # 后方30%
-        x_max = min(config.start_x + config.length, submarine_x + x_range * 0.7)  # 前方70%
+        # 计算有效 X 范围
+        x_min = max(config.start_x, submarine_x - self.config.sample_distance * 0.3)
+        x_max = min(config.start_x + config.length, submarine_x + self.config.sample_distance * 0.7)
         
-        for _ in range(num_points):
-            # 随机 X 坐标
-            x = np.random.uniform(x_min, x_max)
+        # 使用固定网格采样
+        count = 0
+        for x_offset in self._tunnel_x_offsets:
+            x = submarine_x + x_offset
             
-            # 在圆周上随机采样角度
-            theta = np.random.uniform(0, 2 * np.pi)
+            # 检查 X 是否在有效范围内
+            if x < x_min or x > x_max:
+                continue
             
-            # 计算圆柱面上的点
+            for theta in self._tunnel_angles:
+                if count >= num_points:
+                    break
+                    
+                y = axis_y + config.radius * np.cos(theta)
+                z = axis_z + config.radius * np.sin(theta)
+                points.append(np.array([x, y, z]))
+                count += 1
+            
+            if count >= num_points:
+                break
+        
+        # 如果点数不足，用最后一个角度的点填充
+        while len(points) < num_points:
+            theta = self._tunnel_angles[len(points) % len(self._tunnel_angles)]
+            x = submarine_x + self._tunnel_x_offsets[-1]
+            x = min(max(x, x_min), x_max)
             y = axis_y + config.radius * np.cos(theta)
             z = axis_z + config.radius * np.sin(theta)
-            
             points.append(np.array([x, y, z]))
         
         return points
@@ -229,8 +260,6 @@ class PointCloudSampler:
         """
         # 归一化到 [-1, 1] 范围
         normalized = points / self.config.normalize_range
-        # 裁剪极端值 - 用户要求取消感知范围限制，让抽样正好落在物体上
-        # normalized = np.clip(normalized, -1.0, 1.0)
         return normalized.flatten()
     
     @property
