@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir:*)",
+      "Bash(cd:*)",
+      "Bash(tar:*)",
+      "Bash(powershell:*)",
+      "Bash(\"D:\\\\project6\\\\SubmarineHunting\\\\python\\\\python.exe\":*)",
+      "Bash(python:*)",
+      "Bash(\"D:\\\\project6\\\\SubmarineHunting\\\\python\\\\python.exe\" -m pip install:*)",
+      "Bash(\"D:\\\\project6\\\\SubmarineHunting\\\\python\\\\python.exe\" -c \"import torch; print\\(torch.__version__\\); import torch.testing; print\\(''torch.testing OK''\\)\")",
+      "Bash(\"D:\\\\project6\\\\SubmarineHunting\\\\python\\\\python.exe\" -m pip install pyinstaller)",
+      "Bash(\"D:\\\\project6\\\\SubmarineHunting\\\\python\\\\Scripts\\\\pyinstaller.exe\":*)",
+      "Bash(cmd:*)"
+    ]
+  }
+}

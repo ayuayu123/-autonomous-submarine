@@ -1,0 +1,41 @@
+# SubmarineHunting - Requirements
+# High-Fidelity AUV Simulation and Deep Reinforcement Learning Platform
+
+# ============================================================================
+# Core Scientific Computing
+# ============================================================================
+numpy>=1.20.0
+matplotlib>=3.5.0
+scipy>=1.7.0
+
+# ============================================================================
+# Simulation and Rendering
+# ============================================================================
+pygame>=2.1.0
+PyOpenGL>=3.1.0
+PyOpenGL_accelerate>=3.1.0
+
+# ============================================================================
+# Reinforcement Learning
+# ============================================================================
+gymnasium>=0.29.0
+stable-baselines3[extra]>=2.0.0
+# Note: [extra] includes tensorboard, opencv, ale-py, and other optional dependencies
+shimmy>=0.2.1
+
+# ============================================================================
+# Deep Learning Framework (Required for Hybrid LSTM Mode)
+# ============================================================================
+torch>=2.0.0
+# For CUDA acceleration, install torch separately:
+# pip install torch --index-url https://download.pytorch.org/whl/cu118
+
+# ============================================================================
+# Data Processing and Analysis (Optional)
+# ============================================================================
+pandas>=1.3.0
+
+# ============================================================================
+# Additional Utilities
+# ============================================================================
+tqdm>=4.62.0

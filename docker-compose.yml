@@ -1,0 +1,71 @@
+version: '3.8'
+
+services:
+  # 训练服务
+  submarine-train:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: submarine_hunting_train
+    volumes:
+      # 挂载训练输出目录
+      - ./training_output:/app/training_output
+      # 挂载模型目录（如果有预训练模型）
+      - ./models:/app/models
+      # GPU 支持（需要 nvidia-docker）
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+    command: python train.py
+
+  # 评估服务
+  submarine-eval:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: submarine_hunting_eval
+    volumes:
+      - ./training_output:/app/training_output
+      - ./models:/app/models
+      - ./eval_output:/app/eval_output
+    environment:
+      - DISPLAY=host.docker.internal:0
+    # 支持 OpenGL 渲染（需要 X11 转发）
+    # 运行前需要: xhost +local:docker
+    command: python eval_sim.py --model ./models/best_model.zip --vecnormalize ./models/vecnormalize.pkl
+    profiles:
+      - eval
+
+  # TensorBoard 服务
+  tensorboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: submarine_hunting_tensorboard
+    ports:
+      - "6006:6006"
+    volumes:
+      - ./training_output:/app/training_output
+    command: tensorboard --logdir=/app/training_output --host=0.0.0.0 --port=6006
+    profiles:
+      - tensorboard
+
+  # 交互式仿真
+  submarine-sim:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: submarine_hunting_sim
+    volumes:
+      - ./models:/app/models
+    environment:
+      - DISPLAY=host.docker.internal:0
+    command: python pygame_sim.py
+    profiles:
+      - sim
